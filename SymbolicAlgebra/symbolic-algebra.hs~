@@ -1,0 +1,366 @@
+{-# LANGUAGE OverloadedStrings #-}
+import Text.ParserCombinators.Parsec hiding (spaces)
+import System.Environment
+import Data.Char
+import Data.List
+import Data.Ratio
+import Data.Function
+import qualified Data.Map as M
+import Control.Monad
+import Control.Monad.Error
+
+type Operator = String
+
+data Expression = Var String
+                | Number (Ratio Integer)
+                | CExpression Operator [Expression] deriving (Eq, Ord)
+
+e :: Ratio Integer
+e = realToFrac $ exp 1
+
+showExpr :: Expression -> String
+showExpr (Number num) = if denominator num == 1 then show $ numerator num else show num
+showExpr (Var var)    = var
+showExpr (CExpression op opps) = "(" ++ op ++ " " ++ (unwords . map showExpr) opps ++ ")"
+
+instance Show Expression where
+  show = showExpr
+
+spaces :: Parser ()
+spaces = skipMany1 space
+
+operator :: Parser String
+operator = string "log"
+        <|> try (string "simp")
+        <|> try (string "sin")
+        <|> string "cos"
+        <|> string "+"
+        <|> string "-"
+        <|> try (string "**")
+        <|> string "*"
+        <|> string "/"
+        <|> string "tan"
+        <|> string "sqrt"
+        <|> string "diff"
+        <|> string "exp"
+        <|> string "int"
+
+parseVar :: Parser Expression
+parseVar = do
+             x <- satisfy isUpper
+             y <- satisfy isDigit
+             return $ Var [x,y]
+
+parseNumber :: Parser Expression
+parseNumber = (Number . (% 1) . read) <$> many1 digit
+
+parseCExpression :: Parser Expression
+parseCExpression = do
+  char '('
+  op    <- endBy operator spaces
+  opps  <- sepBy parseExpr spaces
+  char ')'
+  return $ CExpression (head op) opps
+
+parseExpr :: Parser Expression
+parseExpr = parseVar
+         <|> parseNumber
+         <|> parseCExpression
+
+readExpr :: String -> Either String Expression
+readExpr input = case parse parseExpr "symbolic" input of
+         Left err -> Left $ "No match: " ++ show err
+         Right val -> Right val
+         
+-- Evaluation
+eval :: (M.Map String (Ratio Integer)) -> Expression -> ThrowsError Expression
+eval env (Number num) = return $ Number num
+eval env (CExpression op opps) = mapM (eval env) opps >>= apply op
+eval env (Var var) = case M.lookup var env of
+                      Just val -> return $ Number val
+                      Nothing  -> return $ Var var
+
+evalExpr :: String -> ThrowsError Expression
+evalExpr input = case parse parseExpr "symbolic" input of
+         Left err -> throwError $ Parser err
+         Right val -> eval M.empty val
+
+apply :: Operator -> [Expression] -> ThrowsError Expression
+apply op opps = maybe (throwError $ NotFunction "Unrecognized primitive function" op)
+                      ($ opps)
+                      (lookup op operators)
+
+operators :: [(String, [Expression] -> ThrowsError Expression)]
+operators = [("+", binaryExpression "+" (+)),
+             ("-", binaryExpression "-" (-)),
+             ("*", binaryExpression "*" (*)),
+             ("/", binaryExpression "/" (/)),
+             ("log", floatingUnaryExpression "log" log),
+             ("sqrt", floatingUnaryExpression "sqrt" sqrt),
+             ("sin", floatingUnaryExpression "sin" sin),
+             ("cos", floatingUnaryExpression "cos" cos),
+             ("exp", floatingUnaryExpression "exp" exp),
+             ("**", floatingBinaryExpression "**" (**)),
+             ("diff", (\x -> differentiate x >>= eval M.empty >>= (\y -> simplify [y]))),
+             ("int", (\x -> integrate x >>= eval M.empty >>= (\y -> simplify [y]))),
+             ("simp", (\x -> simplify x >>= eval M.empty >>= (\y -> simplify [y])))]
+
+binaryExpression ::  Operator -> (Ratio Integer -> Ratio Integer -> Ratio Integer) -> [Expression] -> ThrowsError Expression
+binaryExpression opName op [] = throwError $ NumArgs 2 []
+binaryExpression opName op singleVal@[_] = throwError $ NumArgs 2 singleVal
+binaryExpression opName op opps = if null symbolic
+                                     then (mapM unpack numeric >>= return . Number . foldl1 op)
+                                     else if null numeric
+                                             then return $ CExpression opName symbolic
+                                             else return $ CExpression opName $
+                                                  (Number $ foldl1 op $ map (\(Number a) -> a) numeric) : symbolic                           
+    where (numeric, symbolic) = partition isNum opps 
+
+floatingUnaryExpression :: (Real a, Floating a) => Operator -> (a -> a) -> [Expression] -> ThrowsError Expression
+floatingUnaryExpression opName op [] = throwError $ NumArgs 1 []
+floatingUnaryExpression opName op [opp] = if isNum opp
+                                             then unpack opp >>= return .Number . realToFrac . op . fromRational
+                                             else return $ CExpression opName [opp] 
+floatingUnaryExpression opName op opps = throwError $ NumArgs 1 opps
+
+floatingBinaryExpression :: (Real a, Floating a) => Operator -> (a -> a -> a) -> [Expression] -> ThrowsError Expression
+floatingBinaryExpression opName op [] = throwError $ NumArgs 2 []
+floatingBinaryExpression opName op singleVal@[_] = throwError $ NumArgs 2 singleVal
+floatingBinaryExpression opName op opps = if null symbolic
+                                             then (mapM unpack numeric >>= return . Number . realToFrac . foldl1 op . map realToFrac)
+                                             else if null numeric
+                                                     then return $ CExpression opName symbolic
+                                                     else return $ CExpression opName $
+                                                          (Number $ realToFrac . foldl1 op $ map (\(Number n) -> realToFrac n) numeric) : symbolic
+    where (numeric, symbolic) = partition isNum opps
+
+isNum :: Expression -> Bool
+isNum (Number _) = True
+isNum _          = False
+
+unpack :: Expression -> ThrowsError (Ratio Integer)
+unpack (Number n) = return n
+unpack (Var var) = throwError $ UnboundVar "variable" var
+--
+
+-- Error handling
+data ExpressionError = NumArgs Integer [Expression]
+                     | Parser ParseError
+                     | NotFunction String String
+                     | BadSpecialForm String Expression
+                     | UnboundVar String String
+                     | Default String
+
+showError :: ExpressionError -> String
+showError (UnboundVar message var) = message ++ ": " ++ var
+showError (BadSpecialForm message form) = message ++ ": " ++ show form
+showError (NotFunction message func) = message ++ ": " ++ func
+showError (NumArgs expected found) = "Expected " ++ show expected
+                                  ++ " args; found values " ++ show found
+showError (Parser parseErr) = "Parse error at " ++ show parseErr
+
+instance Show ExpressionError where
+  show = showError
+
+instance Error ExpressionError where
+  noMsg = Default "An error has occured"
+  strMsg = Default
+
+type ThrowsError = Either ExpressionError
+
+trapError action = catchError action (return . show)
+
+extractValue :: ThrowsError a -> a
+extractValue (Right val) = val
+
+-- Differentiation rules
+differentiate :: [Expression] -> ThrowsError Expression
+differentiate [] = throwError $ NumArgs 2 []
+differentiate singleVal@[_] = throwError $ NumArgs 2 singleVal
+differentiate [Number _ , Var var] =return $ Number 0
+differentiate [Var v1, Var v2] =return $ Number $ if v1 == v2 then 1 else 0
+differentiate [CExpression op opps, Var var] = maybe (throwError $ NotFunction "Not differentiable function" op)
+                                                       (\f -> f opps var)
+                                                       (lookup op differentiationOperators)                                                
+differentiate badForm = throwError $ NumArgs 2 badForm          
+
+differentiationOperators :: [(String,[Expression] -> String -> ThrowsError Expression)]
+differentiationOperators = [("+", plusDifferentiation),
+                            ("-", minusDifferentiation),
+                            ("*", multDifferentiation),
+                            ("/", divisionDifferentiation),
+                            ("log", logDifferentiation),
+                            ("sqrt", sqrtDifferentiation),
+                            ("sin", sinDifferentiation),
+                            ("cos", cosDifferentiation),
+                            ("exp", expDifferentiation),
+                            ("**", exptDifferentiation)]
+
+plusDifferentiation :: [Expression] -> String -> ThrowsError Expression
+plusDifferentiation opps var = return $ CExpression "+" $  map (\opp -> extractValue $ differentiate [opp, Var var]) opps
+
+minusDifferentiation :: [Expression] -> String -> ThrowsError Expression
+minusDifferentiation opps var = return $ CExpression "-" $ map (\opp -> extractValue $ differentiate [opp, Var var]) opps
+
+multDifferentiation :: [Expression] -> String -> ThrowsError Expression
+multDifferentiation opps var = return $ CExpression "+" $
+                                        map (\(exp,exps) -> CExpression "*" ((extractValue $ differentiate [exp, Var var]):exps))
+                                            [(opps !! (i-1), take (i-1) opps ++ drop i opps) | i <- [1..length opps]]
+
+divisionDifferentiation :: [Expression] -> String -> ThrowsError Expression
+divisionDifferentiation [opp1,opp2] var = return $ CExpression "/" [
+                                                    CExpression "-" [
+                                                     CExpression "*" [extractValue $ differentiate [opp1, Var var], opp2],
+                                                     CExpression "*" [opp1, extractValue $ differentiate [opp2, Var var]]],
+                                                    CExpression "**" [opp2,Number 2]]
+
+logDifferentiation :: [Expression] -> String -> ThrowsError Expression
+logDifferentiation [opp] var = return $ CExpression "/" [
+                                         extractValue $ differentiate [opp, Var var],
+                                         opp]
+
+sqrtDifferentiation :: [Expression] -> String -> ThrowsError Expression
+sqrtDifferentiation [opp] var = return $ CExpression "/" [
+                                          extractValue $ differentiate [opp, Var var],
+                                          CExpression "*" [
+                                           Number 2,
+                                           CExpression "sqrt" [opp]]]
+
+sinDifferentiation :: [Expression] -> String -> ThrowsError Expression
+sinDifferentiation [opp] var = return $ CExpression "*" [
+                                         CExpression "cos" [opp],
+                                         extractValue $ differentiate [opp, Var var]]
+
+cosDifferentiation :: [Expression] -> String -> ThrowsError Expression
+cosDifferentiation [opp] var = return $ CExpression "*" [
+                                         Number (-1),
+                                         CExpression "sin" [opp],
+                                         extractValue $ differentiate [opp, Var var]]
+
+expDifferentiation :: [Expression] -> String -> ThrowsError Expression
+expDifferentiation [opp] var = return $ CExpression "*" [
+                                         extractValue $ differentiate [opp, Var var],
+                                         CExpression "exp" [opp]]
+
+exptDifferentiation :: [Expression] -> String -> ThrowsError Expression
+exptDifferentiation [opp1, opp2] var = return $ CExpression "*" [
+                                                 CExpression "exp" [
+                                                  CExpression "*" [
+                                                   opp2,
+                                                   CExpression "log" [opp1]]],
+                                                 CExpression "+" [
+                                                  CExpression "*" [
+                                                   extractValue $ differentiate [opp2, Var var],
+                                                   CExpression "log" [opp1]],
+                                                  CExpression "*" [
+                                                    opp2,
+                                                    extractValue $ differentiate [
+                                                     CExpression "log" [opp1],
+                                                     Var var]]]]
+
+-- Simplification
+simplify :: [Expression] -> ThrowsError Expression
+simplify [] = throwError $ NumArgs 1 []
+simplify [val@(Number n)] = return val
+simplify [val@(Var v)] = return val
+simplify [expr@(CExpression op opps)] =
+  let simplified = replaceTerm (CExpression op $ map (\opp -> extractValue $ simplify [opp]) opps)
+  in if expr /= simplified then simplify [simplified] else return $ expr
+simplify badForm = throwError $ NumArgs 1 badForm
+
+-- replacement rules
+replaceTerm :: Expression -> Expression
+replaceTerm (CExpression "+" [Number 0, val]) = val
+replaceTerm (CExpression "+" [expr]) = expr
+replaceTerm (CExpression "+" (Number 0 : opps)) = CExpression "+" opps
+replaceTerm (CExpression "+" [opp, CExpression "+" opps]) = CExpression "+" (opp:opps)
+replaceTerm (CExpression "+" opps) = subRule2 $ subRule1 $ CExpression "+" $ concatMap flattenAddition opps
+   where flattenAddition (CExpression "+" opps) = opps
+         flattenAddition expr                   = [expr]
+         subRule1 (CExpression "+" opps) = CExpression "+" $ filter (not. (\x -> isNum x && x == Number 0)) opps
+         subRule2 (CExpression "+" opps)
+           | length (maximumBy (compare `on` length) groups) > 1 =
+             CExpression "+" $ map (\expr -> CExpression "*" [Number $ fromIntegral $ length expr, head expr]) groups
+           | otherwise = CExpression "+" opps
+             where groups = group $ sort $ map sortExpr opps
+replaceTerm (CExpression "*" [expr]) = expr
+replaceTerm (CExpression "*" (Number 0 : opps)) = Number 0
+replaceTerm (CExpression "*" [Number 1, val]) = val
+replaceTerm (CExpression "*" (Number 1 : opps)) = CExpression "*" opps
+replaceTerm (CExpression "*" [Number n, CExpression "*" opps]) = CExpression "*" (Number n:opps)
+replaceTerm (CExpression "*" [Var v, CExpression "*" opps]) = CExpression "*" (Var v:opps)
+replaceTerm (CExpression "*" [CExpression "*" opps1, CExpression "*" opps2]) = CExpression "*" (opps1 ++ opps2)
+replaceTerm (CExpression "*" [expr1@(CExpression "exp" _), expr2@(CExpression "*" _)]) =
+    CExpression "*" [expr1,expr2]
+replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression "log" _)]) =
+    CExpression "*" (expr:opps)
+replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression "sin" _)]) =
+    CExpression "*" (expr:opps)
+replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression "cos" _)]) =
+    CExpression "*" (expr:opps)
+replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression _ [_])]) =
+    CExpression "*" (expr:opps)
+replaceTerm (CExpression "*" [CExpression "+" opps1, expr@(CExpression "+" opps2)]) =
+    CExpression "+" $ map (\opp -> CExpression "*" [opp, expr]) opps1
+replaceTerm (CExpression "*" [Number n, CExpression "/" [Number 1, expr]]) =
+    CExpression "/" [Number n, expr]
+replaceTerm (CExpression "*" [Var var, CExpression "/" [Number 1, expr]]) =
+    CExpression "/" [Var var, expr]
+replaceTerm (CExpression "*" [expr1@(CExpression _ _), CExpression "/" [Number 1, expr2]]) =
+    CExpression "/" [expr1, expr2]
+replaceTerm (CExpression "*" [Var var, CExpression "+" opps]) =
+    CExpression "+" $ map (\opp -> CExpression "*" [Var var, opp]) opps
+replaceTerm (CExpression "*" [Number n, CExpression "+" opps]) =
+    CExpression "+" $ map (\opp -> CExpression "*" [Number n, opp]) opps
+replaceTerm (CExpression "/" [expr, Number n]) = CExpression "*" [Number (1/n), expr]
+replaceTerm expr@(CExpression "/" [CExpression "*" opps, expr1])
+    | expr1 `elem` opps = CExpression "*" $ delete expr1 opps
+    | otherwise = expr
+replaceTerm val = val
+
+sortExpr :: Expression -> Expression
+sortExpr (Number n) = Number n
+sortExpr (Var var)  = Var var
+sortExpr (CExpression "*" opps) = CExpression "*" $ sort opps
+sortExpr (CExpression "+" opps) = CExpression "+" $ sort opps
+sortExpr expr = expr
+
+-- Integration
+allVars  :: [String]
+allVars = [[x,y] | x <- ['A'..'Z'], y <- ['1'..'9']]
+
+usedVars :: Expression -> [String]
+usedVars (Number _) = []
+usedVars (Var var) = [var]
+usedVars (CExpression _ opps) = concatMap usedVars opps
+
+findAvailableVar :: Expression -> String
+findAvailableVar e = head [x | x <- allVars, x `notElem` usedVars e]
+
+isPolynomial :: Expression -> Bool
+isPolynomial (Number _) = True
+isPolynomial (Var _) = True
+isPolynomial (CExpression "+" opps) = all isPolynomial opps
+isPolynomial (CExpression "*" [Number _, opp1]) = isPolynomial opp1
+isPolynomial (CExpression "-" opps) = all isPolynomial opps
+isPolynomial _ = False
+
+integrate :: [Expression] -> ThrowsError Expression
+integrate [] = throwError $ NumArgs 2 []
+integrate singleVal@[_] = throwError $ NumArgs 2 singleVal
+integrate [Number n, Var v] = return $ CExpression "*" [Number n, Var v]
+integrate [Var v1, Var v2] = return $ if v1 == v2
+                                        then CExpression "/" [
+                                              CExpression "**" [Var v1, Number 2],
+                                                               Number 2]
+                                        else CExpression "*" [Var v1, Var v2]
+
+-- Най-добре интегрирането да се извършва без добавяне на константа, тъй като
+-- това само ще усложни правилата за заменяне при опростяване без да доведе до
+-- някакви ползи
+--integrate [Number n, Var v] = return $ CExpression "+" [
+--                                        CExpression "*" [Number n, Var v],
+--                                        Var $ findAvailableVar $ Var v]
+
+main :: IO ()
+main = putStr "Great Program"
