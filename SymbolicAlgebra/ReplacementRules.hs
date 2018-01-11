@@ -12,7 +12,7 @@ replaceTerm (CExpression "+" [opp, CExpression "+" opps]) = CExpression "+" (opp
 replaceTerm (CExpression "+" opps) = subRule2 $ subRule1 $ CExpression "+" $ concatMap flattenAddition opps
    where flattenAddition (CExpression "+" opps) = opps
          flattenAddition expr                   = [expr]
-         subRule1 (CExpression "+" opps) = CExpression "+" $ filter (not. (\x -> isNum x && x == Number 0)) opps
+         subRule1 (CExpression "+" opps) = CExpression "+" $ filter (not . (\x -> isNum x && x == Number 0)) opps
          subRule2 (CExpression "+" opps)
            | length (maximumBy (compare `on` length) groups) > 1 =
              CExpression "+" $ map (\expr -> CExpression "*" [Number $ fromIntegral $ length expr, head expr]) groups
@@ -51,7 +51,9 @@ replaceTerm (CExpression "*" [Var var, CExpression "+" opps]) =
     CExpression "+" $ map (\opp -> CExpression "*" [Var var, opp]) opps
 replaceTerm (CExpression "*" [Number n, CExpression "+" opps]) =
     CExpression "+" $ map (\opp -> CExpression "*" [Number n, opp]) opps
+replaceTerm (CExpression "*" opps) = CExpression "*" $ filter (not . (\expr -> isNum expr && expr == Number 1)) opps
 replaceTerm (CExpression "/" [expr, Number n]) = CExpression "*" [Number (1/n), expr]
+replaceTerm (CExpression "/" (expr : Number n : exprs)) = CExpression "/" (CExpression "*" [expr, Number (1 / n)] : exprs)
 replaceTerm expr@(CExpression "/" [CExpression "*" opps, expr1])
     | expr1 `elem` opps = CExpression "*" $ delete expr1 opps
     | otherwise = expr
