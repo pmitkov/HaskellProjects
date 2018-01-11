@@ -1,7 +1,16 @@
 module Tests where
 
 import Test.HUnit
+import qualified Data.Map as M
+import Control.Monad
+import Control.Monad.Error
+import Text.ParserCombinators.Parsec hiding (spaces)
+
 import Symbolic
+import ReplacementRules
+import SymbolicError
+import SymbolicParser
+import Integration
 
 isException :: ThrowsError Expression -> Bool
 isException (Left _)  = True
@@ -164,19 +173,145 @@ complexEvalDivAndMult = TestCase $ do
 complexEvalAllOperators1 = TestCase $ do
         let Right (Number val) = evalExpr "(/ (** 2 3) (- (/ 5 6) 12))"
         assertEqual  "(/ (** 2 3) (- (/ 5 6) 12))" val ((2 ^ 3) / ((5 / 6) - 12))
+        let Right (Number val) = evalExpr "(sin (** 2 6))"
+        assertEqual "(sin (** 2 6))" (realToFrac $ sin (2 ^ 6)) val
+        let Right (Number val) = evalExpr "(cos (** 2 6))"
+        assertEqual "(cos (** 2 6))" (realToFrac $ cos (2 ^ 6)) val
+        let Right (Number val) = evalExpr "(exp (* 2 (+ 4 (sin 6))))"
+        assertEqual "(exp (* 2 (+ 4 (sin 6))))" (realToFrac $ exp (2 * (4 + sin 6))) val
+        let Right (Number val) = evalExpr "(+ (sin 6) 3)"
+        assertEqual "(+ (sin 6) 3)" (realToFrac $ sin 6 + 3) val
+        let Right (Number val) = evalExpr "(/ (sin 4) (sin 4))"
+        assertEqual "(/ (sin 4) (sin 4))" 1 val
+        let Right (Number val) = evalExpr "(** (+ 2 2) 3)"
+        assertEqual "(** (+ 2 2) 3)" ((2 + 2) ^ 3) val
+        let Right (Number val) = evalExpr "(+ (** 2 3) (** 2 4))"
+        assertEqual "(+ (** 2 3) (** 2 4))" (2 ^ 3 + 2 ^ 4) val
+        let Right (Number val) = evalExpr "(/ 1 (** 2 3))"
+        assertEqual "(/ 1 (** 2 3))" (1 / 2 ^ 3) val
+        let Right (Number val) = evalExpr "(sqrt (+ 2 2))"
+        assertEqual "(sqrt (+ 2 2))" (realToFrac $ sqrt (2 + 2)) val
+        let Right (Number val) = evalExpr "(+ (sqrt 5) (sqrt 5))"
+        assertEqual "(+ (sqrt 5) (sqrt 5))" (realToFrac $ sqrt 5 + sqrt 5) val
+        let Right (Number val) = evalExpr "(+ (sqrt (** 2 2)) (sqrt (** 3 2)))"
+        assertEqual "(+ (sqrt (** 2 2)) (sqrt (** 3 2)))" (realToFrac $ sqrt (2 ^ 2) + sqrt (3 ^ 2)) val
+        let Right (Number val) = evalExpr "(cos (** 2 (+ 2 2)))"
+        assertEqual "(cos (** 2 (+ 2 2)))" (realToFrac $ cos (2 ^ (2 + 2))) val
 
--- Tests to be done
--- More complex evaluation tests
--- Substitution with values tests
--- Tests for exceptions
--- Tests for exceptions with proper text
--- Differentiation tests
--- Integration tests
+substitutionWithOneVar = TestCase $ do
+        let Right expr = evalExpr "(+ X1 3)"
+            Right (Number val) = eval (M.fromList [("X1", 10)]) expr 
+        assertEqual "(+ X1 3)" (10 + 3) val
+        let Right expr = evalExpr "(* X1 X1)"
+            Right (Number val) = eval (M.fromList [("X1", 10)]) expr 
+        assertEqual "(* X1 X1)" (10 * 10) val
+        let Right expr = evalExpr "(** X1 X1)"
+            Right (Number val) = eval (M.fromList [("X1", 10)]) expr 
+        assertEqual "(** X1 X1)" (10 ^ 10) val
+        let Right expr = evalExpr "(* X1 15)"
+            Right (Number val) = eval (M.fromList [("X1", 0)]) expr 
+        assertEqual "(* X1 15)" (0 * 15) val
+        let Right expr = evalExpr "(/ X1 X1)"
+            Right (Number val) = eval (M.fromList [("X1", 10)]) expr 
+        assertEqual "(/ X1 X1)" (10 / 10) val
 
--- Additional modifications to the code
--- Improve Integration
--- Add Binary non comutative and associative functions
--- Fix Division to be non binary operation
+substitutionWithTwoVars = TestCase $ do
+        let Right expr = evalExpr "(+ X1 X2)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4)]) expr
+        assertEqual "(+ X1 X2)" (3 + 4) val
+        let Right expr = evalExpr "(* X1 X2)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4)]) expr
+        assertEqual "(* X1 X2)" (3 * 4) val
+        let Right expr = evalExpr "(** X1 X2)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4)]) expr
+        assertEqual "(** X1 X2)" (3 ^ 4) val
+        let Right expr = evalExpr "(+ X1 (* X2 15))"
+            Right (Number val) = eval (M.fromList [("X1", 15), ("X2", 10)]) expr
+        assertEqual "(+ X1 (* X2 15))" (15 + (10 * 15)) val
+        let Right expr = evalExpr "(* (sin X1) X2)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4)]) expr
+        assertEqual "(* (sin X1) X2)" (realToFrac $ sin 3 * 4) val
+
+substitutionWithThreeVars = TestCase $ do
+        let Right expr = evalExpr "(+ X1 X2 X3)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4), ("X3", 5)]) expr
+        assertEqual "(+ X1 X2 X3)" (3 + 4 + 5) val
+        let Right expr = evalExpr "(* X1 X2 X3)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4), ("X3", 5)]) expr
+        assertEqual "(* X1 X2 X3)" (3 * 4 * 5) val
+        let Right expr = evalExpr "(+ (** X1 X2) X3)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 2), ("X3", 4)]) expr
+        assertEqual "(+ (** X1 X2) X3)" (3 ^ 2 + 4) val
+        let Right expr = evalExpr "(/ X1 X2 X3)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4), ("X3", 5)]) expr
+        assertEqual "(/ X1 X2 X3)" (3 / 4 / 5) val
+        let Right expr = evalExpr "(- X1 X2 X3)"
+            Right (Number val) = eval (M.fromList [("X1", 3), ("X2", 4), ("X3", 5)]) expr
+        assertEqual "(- X1 X2 X3)" (3 - 4 - 5) val
+
+parseErrorException = TestCase $ do
+        assertBool "(+ 3 4" $ isParseError $ evalExpr "(+ 3 4"
+        assertBool "+ 3 4)" $ isParseError $ evalExpr "+ 3 4)"
+        assertBool "+ 3 4" $ isParseError $ evalExpr "+ 3 4"
+        assertBool "(3 + 4)" $ isParseError $ evalExpr "(3 + 4)"
+        assertBool "(+ 3 - 4)" $ isParseError $ evalExpr "(+ 3 - 4)"
+
+        assertBool "(/ (+ 3 4)" $ isParseError $ evalExpr "(/ (+ 3 4)"
+        assertBool "X11" $ isParseError $ evalExpr "X11"
+        assertBool "(+ X11 3)" $ isParseError $ evalExpr "(+ X11 3)"
+        assertBool "(+ x1 3)" $ isParseError $ evalExpr "(+ x1 3)"
+        assertBool "(+ X 3)" $ isParseError $ evalExpr "(+ X 3)"
+    where isParseError (Left (Parser _)) = True
+          isParseError _                 = False
+
+numArgsException = TestCase $ do
+        assertBool "(+ 1)" $ isNumArgsN 2 (evalExpr "(+ 1)")
+        assertBool "(* 1)" $ isNumArgsN 2 (evalExpr "(* 1)")
+        assertBool "(- 1)" $ isNumArgsN 2 (evalExpr "(- 1)")
+        assertBool "(/ 1)" $ isNumArgsN 2 (evalExpr "(/ 1)")
+        assertBool "(** 1)" $ isNumArgsN 2 (evalExpr "(** 1)")
+        assertBool "(sqrt 1 2)" $ isNumArgsN 1 (evalExpr "(sqrt 1 2)")
+        assertBool "(sin 1 2)" $ isNumArgsN 1 (evalExpr "(sin 1 2)")
+        assertBool "(cos 1 2)" $ isNumArgsN 1 (evalExpr "(cos 1 2)")
+        assertBool "(exp 1 2)" $ isNumArgsN 1 (evalExpr "(exp 1 2)")
+        assertBool "(log 1 2)" $ isNumArgsN 1 (evalExpr "(log 1 2)")
+        assertBool "(tan 1 2)" $ isNumArgsN 1 (evalExpr "(tan 1 2)")
+    where isNumArgsN n res = case res of
+                                (Left (NumArgs m _)) -> n == m
+                                _                    -> False
+
+singleVarDifferentiation = TestCase $ do
+        let Right expr = evalExpr "(diff (+ X1 1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (+ X1 1) X1)" (1 + 0) val
+        let Right expr = evalExpr "(diff (+ (* X1 X1) 3) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (+ (* X1 X1) 3) X1)" (2 * 3) val
+        let Right expr = evalExpr "(diff (+ X1 (* X1 X1)) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 5)]) expr
+        assertEqual "(diff (+ X1 (* X1 X1)) X1)" (1 + 2 * 5) val
+        let Right expr = evalExpr "(diff (* 15 X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (* 15 X1) X1)" (15 * 1) val
+        let Right expr = evalExpr "(diff (sin X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (sin X1) X1)" (realToFrac $ cos 3) val
+
+        let Right expr = evalExpr "(diff (cos X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (cos X1) X1)" (realToFrac $ -(sin 3)) val
+        let Right expr = evalExpr "(diff (sqrt X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 4)]) expr
+        assertEqual "(diff (sqrt X1) X1)" (realToFrac $ 1 / (2 * sqrt 4)) val
+        let Right expr = evalExpr "(diff (exp X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (exp X1) X1)" (realToFrac $ exp 3) val
+        let Right expr = evalExpr "(diff (exp X1) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 15)]) expr
+        assertEqual "(diff (exp X1) X1)" (realToFrac $ exp 15) val
+        let Right expr = evalExpr "(diff (- 1 (* X1 X1 X1)) X1)"
+            Right (Number val) = eval (M.fromList [("X1", 3)]) expr
+        assertEqual "(diff (+ X1 1) X1)" (- (3 * 3 ^ 2)) val
 
 simpleEvaluationTests = TestList [TestLabel "simpleEvalAdd"  simpleEvalAdd,
                                   TestLabel "simpleEvalSub"  simpleEvalSub,
@@ -193,3 +328,12 @@ complexEvaluationTests = TestList [TestLabel "complexEvalAddAndSub"  complexEval
                                    TestLabel "complexEvalAddAndDiv"  complexEvalAddAndDiv,
                                    TestLabel "complexEvalAddAndMult" complexEvalAddAndMult,
                                    TestLabel "complexEvalAllOperators1" complexEvalAllOperators1]
+
+substitutionTests = TestList [TestLabel "substitutionWithOneVar"    substitutionWithOneVar,
+                              TestLabel "substitutionWithTwoVars"   substitutionWithTwoVars,
+                              TestLabel "substitutionWithThreeVars" substitutionWithThreeVars]
+
+exceptionTests = TestList [TestLabel "parseErrorException" parseErrorException,
+                           TestLabel "numArgsException"    numArgsException]
+
+differentiationTests = TestList [TestLabel "singleVarDifferentiation" singleVarDifferentiation]
