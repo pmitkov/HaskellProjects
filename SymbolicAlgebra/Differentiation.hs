@@ -11,8 +11,8 @@ differentiate singleVal@[_] = throwError $ NumArgs 2 singleVal
 differentiate [Number _ , Var var] =return $ Number 0
 differentiate [Var v1, Var v2] =return $ Number $ if v1 == v2 then 1 else 0
 differentiate [CExpression op opps, Var var] = maybe (throwError $ NotFunction "Not differentiable function" op)
-                                                       (\f -> f opps var)
-                                                       (lookup op differentiationOperators)                                                
+                                                     (\f -> f opps var)
+                                                     (lookup op differentiationOperators)                                                
 differentiate badForm = throwError $ NumArgs 2 badForm          
 
 differentiationOperators :: [(String,[Expression] -> String -> ThrowsError Expression)]
