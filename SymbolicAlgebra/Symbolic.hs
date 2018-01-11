@@ -39,12 +39,13 @@ apply op opps = maybe (throwError $ NotFunction "Unrecognized primitive function
 
 operators :: [(String, [Expression] -> ThrowsError Expression)]
 operators = [("+", binaryExpression "+" (+)),
-             ("-", binaryExpression "-" (-)),
+             ("-", binaryNonCommutativeExpression "-" (-)),
              ("*", binaryExpression "*" (*)),
-             ("/", binaryExpression "/" (/)),
+             ("/", binaryNonCommutativeExpression "/" (/)),
              ("log", floatingUnaryExpression "log" log),
              ("sqrt", floatingUnaryExpression "sqrt" sqrt),
              ("sin", floatingUnaryExpression "sin" sin),
+             ("tan", floatingUnaryExpression "tan" tan),
              ("cos", floatingUnaryExpression "cos" cos),
              ("exp", floatingUnaryExpression "exp" exp),
              ("**", floatingBinaryExpression "**" (**)),
@@ -61,11 +62,27 @@ binaryExpression opName op opps
     | otherwise     = return $ CExpression opName $ (Number $ foldl1 op $ map (\(Number a) -> a) numeric) : symbolic
     where (numeric, symbolic) = partition isNum opps
 
+binaryNonCommutativeExpression :: Operator -> (Ratio Integer -> Ratio Integer -> Ratio Integer) -> [Expression] -> ThrowsError Expression
+binaryNonCommutativeExpression opName op [] = throwError $ NumArgs 2 []
+binaryNonCommutativeExpression opName op singleVal@[_] = throwError $ NumArgs 2 singleVal
+binaryNonCommutativeExpression opName op opps
+    | length operands == 1 = return $ head operands
+    | otherwise = return $ CExpression opName $ fold opps
+    where foldExpr [] = []
+          foldExpr [expr] = [expr]
+          foldExpr (Number n1 : Number n2 : xs) = Number (op n1 n2) : foldExpr xs
+          foldExpr (x:xs) = x : foldExpr xs
+          fold expr
+              | expr /= foldExpr expr = fold $ foldExpr expr
+              | otherwise = expr
+          operands = fold opps
+
 floatingUnaryExpression :: (Real a, Floating a) => Operator -> (a -> a) -> [Expression] -> ThrowsError Expression
 floatingUnaryExpression opName op [] = throwError $ NumArgs 1 []
 floatingUnaryExpression opName op [opp]
     | isNum opp = unpack opp >>= return . Number . realToFrac . op . fromRational
     | otherwise = return $ CExpression opName [opp]
+floatingUnaryExpression _ _ _ = throwError $ NumArgs 1 []
 
 floatingBinaryExpression :: (Real a, Floating a) => Operator -> (a -> a -> a) -> [Expression] -> ThrowsError Expression
 floatingBinaryExpression opName op [] = throwError $ NumArgs 2 []
