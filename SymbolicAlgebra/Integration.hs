@@ -2,6 +2,7 @@ module Integration where
 
 import Control.Monad
 import Control.Monad.Error
+import Data.Ratio
 
 import SymbolicParser
 import SymbolicError
@@ -21,9 +22,17 @@ isPolynomial :: Expression -> Bool
 isPolynomial (Number _) = True
 isPolynomial (Var _) = True
 isPolynomial (CExpression "+" opps) = all isPolynomial opps
-isPolynomial (CExpression "*" [Number _, opp1]) = isPolynomial opp1
+isPolynomial (CExpression "*" opps) = all isPolynomial opps
 isPolynomial (CExpression "-" opps) = all isPolynomial opps
 isPolynomial _ = False
+
+isVar :: Expression -> Bool
+isVar (Var _) = True
+isVar _       = False
+
+isSpecialForm :: String -> Expression -> Bool
+isSpecialForm var (CExpression "*" opps) = all (\opp -> isNum opp || (isVar opp && Var var == opp)) opps 
+isSpecialForm _ _ = False
 
 integrate :: [Expression] -> ThrowsError Expression
 integrate [] = throwError $ NumArgs 2 []
@@ -44,8 +53,11 @@ integrate [expr@(CExpression op [Var v1]), Var v2]
     | op == "cos" = return $ CExpression "cos" [Var v2]
     | op == "sqrt" = return $ CExpression "*" [CExpression "**" [Var v2, Number (3/2)],
                                                Number (2/3)]
-
--- Integration
+integrate [expr@(CExpression op opps), Var var]
+    | var `notElem` usedVars expr = return $ CExpression "*" [Var var, expr]
+    | isSpecialForm var expr = return $ CExpression "*" (Number (1 % (toInteger (length (filter isVar opps)) + 1)) : Var var : opps)
+integrate [expr, Var _] = throwError $ BadSpecialForm "Can't integrate" expr
+integrate [_, v] = throwError $ BadSpecialForm "Not a variable" v 
 
 --integrate [CExpression]
 -- Най-добре интегрирането да се извършва без добавяне на константа, тъй като
