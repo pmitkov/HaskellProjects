@@ -33,8 +33,8 @@ replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression "sin" _)])
     CExpression "*" (expr:opps)
 replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression "cos" _)]) =
     CExpression "*" (expr:opps)
-replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression _ [_])]) =
-    CExpression "*" (expr:opps)
+replaceTerm (CExpression "*" [CExpression "*" opps, expr@(CExpression _ _)]) =
+    CExpression "*" (opps ++ [expr])
 replaceTerm (CExpression "*" [CExpression "+" opps1, expr@(CExpression "+" opps2)]) =
     CExpression "+" $ map (\opp -> CExpression "*" [opp, expr]) opps1
 replaceTerm (CExpression "*" (Number n1 : Number n2 : opps)) =
