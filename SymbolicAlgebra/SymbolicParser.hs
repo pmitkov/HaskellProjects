@@ -14,6 +14,18 @@ isNum :: Expression -> Bool
 isNum (Number _) = True
 isNum _          = False
 
+getOperator :: Expression -> String
+getOperator (CExpression op _) = op
+getOperator _ = error "Argument is not a complex expression. Use isCExpression to check"
+
+getOperands :: Expression -> [Expression]
+getOperands (CExpression _ opps) = opps
+getOperands _ = error "Argument is not a complex expression. Use isCexpression to check"
+
+isCExpression :: Expression -> Bool
+isCExpression (CExpression _ _) = True
+isCExpression _ = False
+
 showExpr :: Expression -> String
 showExpr (Number num) = if denominator num == 1 then show $ numerator num else show num
 showExpr (Var var)    = var
